@@ -1,12 +1,15 @@
-import solid from 'vite-plugin-solid';
+import solid from '@solidjs/vite-plugin';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
-  plugins: [solid()],
+  // Native refresh currently redeclares overloaded component functions in dev.
+  // Tests exercise lifecycle directly and do not need hot module replacement.
+  plugins: [solid({ hot: false })],
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/vitest/setup.ts'],
     coverage: {
+      clean: false,
       include: ['src'],
       exclude: [
         'src/types',

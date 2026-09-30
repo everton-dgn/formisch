@@ -7,7 +7,8 @@ import {
   screen,
   waitFor,
 } from '@solidjs/testing-library';
-import { For, type JSX } from 'solid-js';
+import type { JSX } from '@solidjs/web';
+import { createSignal, For } from 'solid-js';
 import * as v from 'valibot';
 import { describe, expect, test, vi } from 'vitest';
 import { Form } from '../../components/Form/index.ts';
@@ -435,12 +436,12 @@ describe('useField', () => {
       function Row(props: {
         form: FormStore<typeof schema>;
         index: number;
+        itemId: string;
       }): JSX.Element {
-        const field = useField(props.form, {
-          // eslint-disable-next-line solid/reactivity
+        const field = useField(props.form, () => ({
           path: ['todos', props.index, 'label'],
-        });
-        return <input {...field.props} />;
+        }));
+        return <input {...field.props} data-item={props.itemId} />;
       }
 
       function Test(): JSX.Element {
@@ -451,13 +452,14 @@ describe('useField', () => {
         formStore = form;
         const fieldArray = useFieldArray(form, { path: ['todos'] });
         return (
-          <For each={fieldArray.items}>
-            {(id, index) => <Row form={form} index={index()} />}
+          <For each={fieldArray.items} keyed={(id) => id}>
+            {(id, index) => <Row form={form} index={index()} itemId={id()} />}
           </For>
         );
       }
 
       render(() => <Test />);
+      const rows = Array.from(document.querySelectorAll('input'));
       expect(
         getFieldStore(formStore![INTERNAL], ['todos', 0, 'label'])!.elements
       ).toHaveLength(1);
@@ -465,12 +467,35 @@ describe('useField', () => {
       swap(formStore!, { path: ['todos'], at: 0, and: 1 });
 
       await vi.waitFor(() => {
+        expect(document.querySelectorAll('input')[0]).toBe(rows[1]);
+        expect(document.querySelectorAll('input')[1]).toBe(rows[0]);
         expect(
           getFieldStore(formStore![INTERNAL], ['todos', 0, 'label'])!.elements
         ).toHaveLength(1);
         expect(
           getFieldStore(formStore![INTERNAL], ['todos', 1, 'label'])!.elements
         ).toHaveLength(1);
+      });
+    });
+
+    test('should unregister an element when a batched conditional removes it', async () => {
+      const schema = v.object({ name: v.string() });
+      const [visible, setVisible] = createSignal(true);
+      let form: FormStore<typeof schema> | undefined;
+
+      function Test(): JSX.Element {
+        form = createForm({ schema });
+        const field = useField(form, { path: ['name'] });
+        return <div>{visible() && <input {...field.props} />}</div>;
+      }
+
+      render(() => <Test />);
+      const internal = getFieldStore(form![INTERNAL], ['name'])!;
+      expect(internal.elements).toHaveLength(1);
+      setVisible(false);
+      await vi.waitFor(() => {
+        expect(internal.elements).toHaveLength(0);
+        expect(internal.initialElements).toHaveLength(0);
       });
     });
 
