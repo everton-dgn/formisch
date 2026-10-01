@@ -1,5 +1,5 @@
 import { getFieldStore, INTERNAL } from '@formisch/core/solid';
-import { insert, remove, reset, swap } from '@formisch/methods/solid';
+import { getInput, insert, remove, reset, swap } from '@formisch/methods/solid';
 import {
   fireEvent,
   render,
@@ -600,8 +600,40 @@ describe('useField', () => {
         'should unregister transferred elements when unmounted immediately after %s',
         (operation) => {
           const { form, container, unmount } = mountArray();
-          expect(container.querySelectorAll('input')).toHaveLength(2);
+          const oldElements = Array.from(container.querySelectorAll('input'));
+          expect(oldElements).toHaveLength(2);
           const fields = mutateArray(form, operation);
+
+          // Verify the transfer before disposal or any batched JSX update.
+          const labels =
+            operation === 'swap'
+              ? ['b', 'a']
+              : operation === 'remove'
+                ? ['b']
+                : ['c', 'a', 'b'];
+          expect(getInput(form)).toEqual({
+            todos: labels.map((label) => ({ label })),
+          });
+          const destinationElements =
+            operation === 'swap'
+              ? [oldElements[1], oldElements[0]]
+              : operation === 'remove'
+                ? [oldElements[1]]
+                : [undefined, ...oldElements];
+          for (const [index, element] of destinationElements.entries()) {
+            const destination = getFieldStore(form[INTERNAL], [
+              'todos',
+              index,
+              'label',
+            ])!;
+            expect(destination.elements).toHaveLength(element ? 1 : 0);
+            if (element) {
+              expect(destination.elements[0]).toBe(element);
+            }
+          }
+          expect(Array.from(container.querySelectorAll('input'))).toEqual(
+            oldElements
+          );
 
           // Do not flush between the mutation and disposal.
           unmount();
