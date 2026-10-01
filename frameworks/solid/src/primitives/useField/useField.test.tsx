@@ -1,5 +1,5 @@
 import { getFieldStore, INTERNAL } from '@formisch/core/solid';
-import { swap } from '@formisch/methods/solid';
+import { insert, remove, reset, swap } from '@formisch/methods/solid';
 import {
   fireEvent,
   render,
@@ -524,6 +524,230 @@ describe('useField', () => {
       // The detached element must not survive in the reset baseline
       unmount();
       expect(internalFieldStore.initialElements).not.toContain(element);
+    });
+
+    // Array methods transfer refs synchronously, before batched JSX updates.
+    describe('interrupted array updates', () => {
+      const schema = v.object({
+        todos: v.array(v.object({ label: v.string() })),
+      });
+
+      interface RowProps {
+        form: FormStore<typeof schema>;
+        index: number;
+        mirrored: boolean;
+      }
+
+      function Row(props: RowProps): JSX.Element {
+        const field = useField(props.form, () => ({
+          path: ['todos', props.index, 'label'],
+        }));
+        return (
+          <>
+            <input {...field.props} value={field.input} />
+            {props.mirrored && <input {...field.props} value={field.input} />}
+          </>
+        );
+      }
+
+      function mountArray(mirrored = false) {
+        let form!: FormStore<typeof schema>;
+        const [visible, setVisible] = createSignal(true);
+        const view = render(() => {
+          form = createForm({
+            schema,
+            initialInput: { todos: [{ label: 'a' }, { label: 'b' }] },
+          });
+          const array = useFieldArray(form, { path: ['todos'] });
+          return (
+            <div>
+              {visible() && (
+                <For each={array.items} keyed={(id) => id}>
+                  {(_id, index) => (
+                    <Row form={form} index={index()} mirrored={mirrored} />
+                  )}
+                </For>
+              )}
+            </div>
+          );
+        });
+        return { form, setVisible, ...view };
+      }
+
+      function mutateArray(
+        form: FormStore<typeof schema>,
+        operation: 'swap' | 'remove' | 'insert'
+      ) {
+        const fields = [0, 1].map(
+          (index) => getFieldStore(form[INTERNAL], ['todos', index, 'label'])!
+        );
+        if (operation === 'swap') {
+          swap(form, { path: ['todos'], at: 0, and: 1 });
+        } else if (operation === 'remove') {
+          remove(form, { path: ['todos'], at: 0 });
+        } else {
+          insert(form, {
+            path: ['todos'],
+            at: 0,
+            initialInput: { label: 'c' },
+          });
+          fields.push(getFieldStore(form[INTERNAL], ['todos', 2, 'label'])!);
+        }
+        return fields;
+      }
+
+      test.each(['swap', 'remove', 'insert'] as const)(
+        'should unregister transferred elements when unmounted immediately after %s',
+        (operation) => {
+          const { form, container, unmount } = mountArray();
+          expect(container.querySelectorAll('input')).toHaveLength(2);
+          const fields = mutateArray(form, operation);
+
+          // Do not flush between the mutation and disposal.
+          unmount();
+
+          expect(container.querySelectorAll('input')).toHaveLength(0);
+          for (const field of fields) {
+            expect(field.elements).toEqual([]);
+            expect(field.initialElements).toEqual([]);
+          }
+        }
+      );
+
+      test('should preserve multiple elements per field after a row shifts to a new index', async () => {
+        const { form, container, unmount } = mountArray(true);
+        expect(container.querySelectorAll('input')).toHaveLength(4);
+        const fields = mutateArray(form, 'remove');
+
+        await vi.waitFor(() => {
+          const elements = Array.from(container.querySelectorAll('input'));
+          expect(elements.map((element) => element.value)).toEqual(['b', 'b']);
+          expect(fields[0].elements).toEqual(elements);
+          expect(fields[1].elements).toEqual([]);
+          expect(fields[1].initialElements).toEqual(elements);
+        });
+        reset(form);
+        await vi.waitFor(() => {
+          const elements = Array.from(container.querySelectorAll('input'));
+          expect(elements.map((element) => element.value)).toEqual([
+            'a',
+            'a',
+            'b',
+            'b',
+          ]);
+          for (const field of fields) {
+            expect(field.elements).toEqual(
+              elements.filter((element) => element.name === field.name)
+            );
+          }
+        });
+        unmount();
+        for (const field of fields) {
+          expect(field.elements).toEqual([]);
+          expect(field.initialElements).toEqual([]);
+        }
+      });
+
+      test.each(['swap', 'remove', 'insert'] as const)(
+        'should unregister transferred elements and remount without stale refs after %s',
+        async (operation) => {
+          const { form, container, setVisible, unmount } = mountArray();
+          const oldElements = Array.from(container.querySelectorAll('input'));
+          expect(oldElements).toHaveLength(2);
+          const fields = mutateArray(form, operation);
+
+          // Remove the fields before JSX can re-register the transferred refs.
+          setVisible(false);
+          await vi.waitFor(() => {
+            expect(container.querySelectorAll('input')).toHaveLength(0);
+            for (const field of fields) {
+              expect(field.elements).toEqual([]);
+              expect(field.initialElements).toEqual([]);
+            }
+          });
+
+          setVisible(true);
+          await vi.waitFor(() => {
+            const elements = Array.from(container.querySelectorAll('input'));
+            expect(elements).toHaveLength(
+              operation === 'remove' ? 1 : operation === 'insert' ? 3 : 2
+            );
+            for (const field of fields) {
+              expect(field.elements).toEqual(
+                elements.filter((element) => element.name === field.name)
+              );
+              for (const element of oldElements) {
+                expect(field.initialElements).not.toContain(element);
+              }
+              for (const element of field.initialElements) {
+                expect(element.isConnected).toBe(true);
+              }
+            }
+          });
+
+          reset(form);
+          await vi.waitFor(() => {
+            const elements = Array.from(container.querySelectorAll('input'));
+            expect(elements.map((element) => element.value)).toEqual([
+              'a',
+              'b',
+            ]);
+            for (const field of fields) {
+              expect(field.elements).toEqual(
+                elements.filter((element) => element.name === field.name)
+              );
+            }
+          });
+          unmount();
+          for (const field of fields) {
+            expect(field.elements).toEqual([]);
+            expect(field.initialElements).toEqual([]);
+          }
+        }
+      );
+    });
+
+    test('should preserve other elements and their reset baseline when one element unmounts', async () => {
+      const schema = v.object({ name: v.string() });
+      const [visible, setVisible] = createSignal(true);
+      let form!: FormStore<typeof schema>;
+
+      const { container, unmount } = render(() => {
+        form = createForm({ schema, initialInput: { name: 'initial' } });
+        const field = useField(form, { path: ['name'] });
+        return (
+          <div>
+            <input {...field.props} value={field.input} />
+            {visible() && <input {...field.props} value={field.input} />}
+          </div>
+        );
+      });
+      const persistent = container.querySelector('input')!;
+      const field = getFieldStore(form[INTERNAL], ['name'])!;
+      expect(field.elements).toHaveLength(2);
+      fireEvent.input(persistent, { target: { value: 'changed' } });
+      setVisible(false);
+
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('input')).toHaveLength(1);
+        expect(field.elements).toEqual([persistent]);
+        expect(field.initialElements).toBe(field.elements);
+        expect(persistent.value).toBe('changed');
+      });
+      reset(form);
+      await vi.waitFor(() => {
+        expect(persistent.value).toBe('initial');
+        expect(field.elements).toEqual([persistent]);
+      });
+      setVisible(true);
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll('input')).toHaveLength(2);
+        expect(field.elements).toHaveLength(2);
+        expect(field.initialElements).toBe(field.elements);
+      });
+      unmount();
+      expect(field.elements).toEqual([]);
+      expect(field.initialElements).toEqual([]);
     });
   });
 });

@@ -97,34 +97,43 @@ export function useField(
         // Capture the JSX scope while props are read, before ref runs unowned.
         const owner = getOwner() ?? fieldOwner;
         return (element: FieldElement) => {
-          const internalFieldStore = getInternalFieldStore();
+          const internalFormStore = getInternalFormStore();
+          const internalFieldStore = getFieldStore(
+            internalFormStore,
+            getPath()
+          )!;
+          const registeredElements = internalFieldStore.elements;
           // An array reorder transfers registered elements between the field
           // stores, so the element may already be present when the framework
           // re-registers it against the destination store
-          if (!internalFieldStore.elements.includes(element)) {
-            internalFieldStore.elements.push(element);
+          if (!registeredElements.includes(element)) {
+            registeredElements.push(element);
           }
           runWithOwner(owner, () =>
             onCleanup(() => {
-              const elements = internalFieldStore.elements.filter(
-                (el) => el !== element
-              );
-              // Keep `initialElements` in sync while the store still owns it
-              // (same reference) and filter it separately otherwise, so the
-              // detached element of a removed array item does not survive in the
-              // reset baseline
-              if (
-                internalFieldStore.elements ===
-                internalFieldStore.initialElements
-              ) {
-                internalFieldStore.initialElements = elements;
-              } else {
-                internalFieldStore.initialElements =
-                  internalFieldStore.initialElements.filter(
-                    (el) => el !== element
-                  );
+              // Array methods transfer the registered array before JSX updates.
+              // Mutate it in place so every destination store drops the element,
+              // even if its ref never runs there before disposal. Also retract it
+              // from the captured store and its reset baseline if they diverged.
+              for (const elements of [
+                registeredElements,
+                internalFieldStore.elements,
+                internalFieldStore.initialElements,
+              ]) {
+                const index = elements.indexOf(element);
+                if (index !== -1) {
+                  elements.splice(index, 1);
+                }
               }
-              internalFieldStore.elements = elements;
+              // A vacated array slot may still alias the destination's elements.
+              // Detach that inactive slot so new destination refs stay there,
+              // while its original baseline remains available for reset.
+              if (
+                getFieldStore(internalFormStore, internalFieldStore.path) !==
+                internalFieldStore
+              ) {
+                internalFieldStore.elements = [];
+              }
             })
           );
         };
